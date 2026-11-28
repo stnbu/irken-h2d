@@ -41,9 +41,20 @@ def free_port():
     s.close()
     return port
 
+def openssl():
+    # macOS's own openssl is LibreSSL, which can't make these
+    #   certificates: use Homebrew's if it's there.
+    try:
+        prefix = subprocess.run (['brew', '--prefix', 'openssl'], capture_output=True, text=True).stdout.strip()
+        if prefix and os.path.exists (PJ (prefix, 'bin', 'openssl')):
+            return PJ (prefix, 'bin', 'openssl')
+    except OSError:
+        pass
+    return 'openssl'
+
 def make_cert (dir, name):
     cert, key = PJ (dir, name + '.pem'), PJ (dir, name + '-key.pem')
-    subprocess.run (['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1',
+    subprocess.run ([openssl(), 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1',
                      '-nodes', '-keyout', key, '-out', cert, '-days', '2', '-subj', '/CN=localhost',
                      '-addext', 'subjectAltName=DNS:localhost,DNS:%s' % (OTHER,)],
                     check=True, capture_output=True)
