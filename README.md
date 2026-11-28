@@ -11,12 +11,23 @@ To build
 Against an installed Irken (python3 util/install.py in the compiler
 repo; set IRKENLIB if it isn't installed in /usr/local/lib/irken/):
 
-    $ irken serve.scm
-    $ irken acme/acme.scm
+    $ make                # serve and serve-x402
+    $ make all            # and acme/acme, source/source, the test programs
+    $ make test           # the tests (python3, openssl, curl with HTTP/2)
 
-and install them as, e.g., /usr/local/sbin/irken-h2d and
+or against a built compiler tree, without installing it:
+
+    $ make IRKEN_DIR=../irken-compiler
+
+(make serve, make acme/acme, ... build one; make clean removes what
+make builds.  irken serve.scm and so on work too.)  Install serve and
+acme/acme as, e.g., /usr/local/sbin/irken-h2d and
 /usr/local/bin/irken-acme.  These build against the installed copy of
-Irken's libraries, so re-install Irken after changing them.
+Irken's libraries, so re-install Irken (and make clean) after changing
+them.
+
+serve.scm and serve-x402.scm are the same server, serve-main.scm;
+serve-x402 adds x402 payments (below).  serve has none of that code.
 
 irken_h2d.sh is a FreeBSD rc script: see the comments at its top.
 

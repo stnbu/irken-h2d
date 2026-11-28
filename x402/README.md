@@ -20,7 +20,7 @@ From the top of the tree:
 
     $ irken serve-x402.scm
 
-which makes `serve-x402`.  It needs an irken-compiler from after November
+which makes `serve-x402` (or `make serve-x402`: see `README.md`).  It needs an irken-compiler from after November
 2026 (master has the fixes it needs: `{}` in `lib/json.scm`, and one type for
 `:H2/BadFrame` so a program can be both an HTTP/2 server and an HTTPS
 client).
@@ -109,7 +109,12 @@ signing, and a JSON-RPC client for an Ethereum node.
 
 ## Testing
 
-    $ irken x402/t-x402.scm && x402/t-x402      # compare with the ";; =>" lines
+    $ make test
+
+runs, among others (see `README.md`):
+
+    $ x402/t-x402                              # compared with its ";; =>" lines
+    $ python3 t-serve.py ./serve               # plain serve: no x402 in it
     $ python3 x402/test-e2e.py ./serve-x402
 
 `test-e2e.py` runs `serve-x402` with a price on `/premium/`, against

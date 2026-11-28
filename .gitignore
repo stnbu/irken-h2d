@@ -19,4 +19,6 @@
 
 # x402 tests
 /x402/t-x402
+/x402/t-x402.expected
+/x402/t-x402.out
 /serve-x402
