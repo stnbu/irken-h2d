@@ -155,6 +155,10 @@ def main():
         users = PJ (tmp, 'users')
         open (users, 'w').write ('member:sesame\n')
         os.chmod (users, 0o600)
+        # no passkeys, but -passkeys turns on /login/, where a password gets a session.
+        passkeys = PJ (tmp, 'passkeys')
+        open (passkeys, 'w').close()
+        os.chmod (passkeys, 0o600)
         conf = PJ (tmp, 'x402.conf')
         open (conf, 'w').write ('\n'.join ([
             '# test configuration',
@@ -178,7 +182,7 @@ def main():
         serve_log = open (PJ (tmp, 'serve.out'), 'w')
         srv = subprocess.Popen ([serve, '127.0.0.1:%d' % (site_port,), '-root', PJ (tmp, 'www'),
                                  '-cert', site_cert, '-key', site_key, '-log', PJ (tmp, 'access.log'),
-                                 '-r', '-users', users, '-x402', conf], stdout=serve_log, stderr=subprocess.STDOUT)
+                                 '-r', '-users', users, '-passkeys', passkeys, '-x402', conf], stdout=serve_log, stderr=subprocess.STDOUT)
         procs.append (srv)
         wait_for (site_port, srv, 'serve')
 
@@ -280,6 +284,15 @@ def main():
         check ('a logged-in user gets the article free',
                r.status == 200 and r.body == 'paid article\n' and 'payment-response' not in r.headers and settlements() == before,
                '%d %r' % (r.status, r.body[:40]))
+        r = get (site_port, '/login/password', user='member:sesame')
+        cookie = r.headers.get ('set-cookie', '').split (';')[0]
+        check ('a password at /login/password gets a session', r.status == 302 and cookie.startswith ('h2d-session='),
+               '%d %r' % (r.status, cookie))
+        r = get (site_port, '/premium/article.html', {'cookie': cookie})
+        check ('with a session, the article is free', r.status == 200 and r.body == 'paid article\n'
+               and 'payment-response' not in r.headers, '%d %r' % (r.status, r.body[:40]))
+        r = get (site_port, '/premium/article.html', {'cookie': 'h2d-session=bogus'})
+        check ('a bogus session pays like anyone else: 402', r.status == 402, str (r.status))
         r = get (site_port, '/premium/article.html', user='member:wrong')
         check ('a wrong password pays like anyone else: 402', r.status == 402 and 'payment-required' in r.headers, str (r.status))
         r = get (site_port, '/premium/article.html', {'payment-signature': b64 (payment())})
@@ -300,7 +313,7 @@ def main():
         log = open (PJ (tmp, 'serve.out')).read()
         check ('payments are logged', log.count ('x402: paid 10000 to %s for localhost/premium/article.html by %s' % (PAY_TO, PAYER)) == 3
                and log.count ('x402: paid %s to %s for %s/members/page.html' % (MEMBERS_PRICE, OTHER_PAY_TO, OTHER)) == 1, log)
-        check ('free access is logged', log.count ('x402: free for member: localhost/premium/article.html') == 2, log)
+        check ('free access is logged', log.count ('x402: free for member: localhost/premium/article.html') == 3, log)
 
         # SIGHUP re-reads the file, and keeps the old one if the new one's bad.
         #   (only where the server reloads on SIGHUP: not on Linux, yet.)
