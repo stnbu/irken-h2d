@@ -1,10 +1,15 @@
 ;; -*- Mode: Irken -*-
 
-;; charging for parts of a site.  (x402-wrapper config other-handler)
+;; charging for parts of a site.  (x402-wrapper state login other-handler)
 ;;  is a handler that takes the requests for priced paths, and lets
-;;  <other-handler> answer them once they're paid for.
+;;  <other-handler> answer them once they're paid for.  <state> holds
+;;  the configuration ({config}, so that SIGHUP can replace it).
 ;;
-;; the order of things:
+;; logins come first: a request from a logged-in user (a session, or a
+;;  password: see login.scm; <login> is (maybe:yes login) with -users
+;;  or -passkeys) isn't charged at all, only logged.
+;;
+;; the order of things, for everyone else:
 ;;
 ;;   no PAYMENT-SIGNATURE: 402, with PAYMENT-REQUIRED saying what to pay.
 ;;   a malformed one: 400.
@@ -122,12 +127,22 @@
                     (x402-verified:invalid reason) -> (send-402 reason (list:nil))
                     (x402-verified:failed why) -> (fail "verifying" why)))))))
 
-(define (x402-wrapper config other-handler)
+(define (x402/logged-in login request)
+  (match login with
+    (maybe:yes login) -> (login-user login request)
+    (maybe:no) -> (maybe:no)))
+
+(define (x402-wrapper state login other-handler)
   (lambda (request)
-    (match (x402/request-path request) with
-      (maybe:yes path)
-      -> (match (x402/find-price config.prices path) (other-handler request) with
-           (maybe:yes price) (maybe:yes fun)
-           -> (maybe:yes (lambda (request) (x402/handle config price fun request path)))
-           _ _ -> (maybe:no))
-      (maybe:no) -> (maybe:no))))
+    (let ((config state.config))
+      (match (x402/request-path request) with
+        (maybe:yes path)
+        -> (match (x402/find-price config.prices path) (other-handler request) with
+             (maybe:yes price) (maybe:yes fun)
+             -> (match (x402/logged-in login request) with
+                  (maybe:yes name)
+                  -> (begin (logf "x402: free for " name ": " path) (maybe:yes fun))
+                  (maybe:no)
+                  -> (maybe:yes (lambda (request) (x402/handle config price fun request path))))
+             _ _ -> (maybe:no))
+        (maybe:no) -> (maybe:no)))))

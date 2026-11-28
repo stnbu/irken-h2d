@@ -1,10 +1,10 @@
 # -*- Mode: Python -*-
 
-# x402 end to end: a real irken-h2d (x402/serve) charging for a directory,
+# x402 end to end: a real irken-h2d (serve-x402) charging for a directory,
 #   settled by x402/mock-facilitator.py, exercised with curl over
 #   HTTP/2.  needs python3, openssl, and a curl with HTTP/2.
 #
-#   python3 x402/test-e2e.py x402/serve
+#   python3 x402/test-e2e.py ./serve-x402
 #
 # everything (certificates, site, config, logs) goes in a scratch
 #   directory, removed afterwards unless -k.
@@ -15,6 +15,7 @@ import json
 import time
 import base64
 import shutil
+import signal
 import socket
 import argparse
 import tempfile
@@ -83,12 +84,14 @@ class Result:
     def __init__ (self, status, headers, body):
         self.status, self.headers, self.body = status, headers, body
 
-def get (port, path, headers={}, path_as_is=False):
+def get (port, path, headers={}, path_as_is=False, user=None):
     # --compressed: irken-h2d deflates whether or not the client asks
     #   (a known bug), so ask, as most clients do.
     cmd = ['curl', '-sS', '-k', '--http2', '--compressed', '--max-time', '20', '-D', '-', '-o', '-']
     if path_as_is:
         cmd.append ('--path-as-is')
+    if user:
+        cmd += ['-u', user]
     for k, v in headers.items():
         cmd += ['-H', '%s: %s' % (k, v)]
     cmd.append ('https://localhost:%d%s' % (port, path))
@@ -111,7 +114,7 @@ def check (name, ok, detail=''):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument ('serve', help='the x402/serve binary')
+    ap.add_argument ('serve', help='the serve-x402 binary')
     ap.add_argument ('-k', action='store_true', help='keep the scratch directory')
     args = ap.parse_args()
     serve = os.path.abspath (args.serve)
@@ -125,6 +128,8 @@ def main():
         open (PJ (www, 'index.html'), 'w').write ('free page\n')
         open (PJ (www, 'premium', 'article.html'), 'w').write ('paid article\n')
         fac_port, site_port = free_port(), free_port()
+        users = PJ (tmp, 'users')
+        open (users, 'w').write ('member:sesame\n')
         conf = PJ (tmp, 'x402.conf')
         open (conf, 'w').write ('\n'.join ([
             '# test configuration',
@@ -146,7 +151,7 @@ def main():
         serve_log = open (PJ (tmp, 'serve.out'), 'w')
         srv = subprocess.Popen ([serve, '127.0.0.1:%d' % (site_port,), '-root', PJ (tmp, 'www'),
                                  '-cert', site_cert, '-key', site_key, '-log', PJ (tmp, 'access.log'),
-                                 '-r', '-x402', conf], stdout=serve_log, stderr=subprocess.STDOUT)
+                                 '-r', '-users', users, '-x402', conf], stdout=serve_log, stderr=subprocess.STDOUT)
         procs.append (srv)
         wait_for (site_port, srv, 'serve')
 
@@ -221,6 +226,13 @@ def main():
         check ('a missing page is a 404, and isn\'t charged', r.status == 404 and settlements() == before,
                '%d, settlements %d -> %d' % (r.status, before, settlements()))
 
+        before = settlements()
+        r = get (site_port, '/premium/article.html', user='member:sesame')
+        check ('a logged-in user gets the article free',
+               r.status == 200 and r.body == 'paid article\n' and 'payment-response' not in r.headers and settlements() == before,
+               '%d %r' % (r.status, r.body[:40]))
+        r = get (site_port, '/premium/article.html', user='member:wrong')
+        check ('a wrong password pays like anyone else: 402', r.status == 402 and 'payment-required' in r.headers, str (r.status))
         r = get (site_port, '/premium/article.html', {'payment-signature': b64 (payment())})
         check ('the server still works after all that', r.status == 200 and r.body == 'paid article\n', str (r.status))
 
@@ -233,9 +245,43 @@ def main():
         check ('no facilitator: 500', r.status == 500, str (r.status))
         r = get (site_port, '/')
         check ('free pages still work without the facilitator', r.status == 200, str (r.status))
+        r = get (site_port, '/premium/article.html', user='member:sesame')
+        check ('logged-in users don\'t need the facilitator', r.status == 200 and r.body == 'paid article\n', str (r.status))
 
         log = open (PJ (tmp, 'serve.out')).read()
         check ('payments are logged', log.count ('x402: paid 10000 for /premium/article.html by %s' % (PAYER,)) == 3, log)
+        check ('free access is logged', log.count ('x402: free for member: /premium/article.html') == 2, log)
+
+        # SIGHUP re-reads the file, and keeps the old one if the new one's bad.
+        #   (only where the server reloads on SIGHUP: not on Linux, yet.)
+        if 'no SIGHUP reloading' in log:
+            print ('SKIP  SIGHUP: this server doesn\'t reload on SIGHUP here')
+        else:
+            open (conf, 'a').write ('price /premium/dear/ 99000 dearer\n')
+            os.makedirs (PJ (www, 'premium', 'dear'))
+            open (PJ (www, 'premium', 'dear', 'x.html'), 'w').write ('dear\n')
+            srv.send_signal (signal.SIGHUP); time.sleep (1)
+            r = get (site_port, '/premium/dear/x.html')
+            req = unb64 (r.headers['payment-required']) if 'payment-required' in r.headers else {}
+            check ('SIGHUP: a new price', r.status == 402 and req.get ('accepts', [{}])[0].get ('amount') == '99000', '%d %r' % (r.status, req))
+            open (conf, 'a').write ('price /x/ lots of money\n')
+            srv.send_signal (signal.SIGHUP); time.sleep (1)
+            r = get (site_port, '/premium/dear/x.html')
+            req = unb64 (r.headers['payment-required']) if 'payment-required' in r.headers else {}
+            check ('SIGHUP: a bad file is logged, and the old one kept', r.status == 402
+                   and req.get ('accepts', [{}])[0].get ('amount') == '99000'
+                   and 'keeping the old one' in open (PJ (tmp, 'serve.out')).read(), '%d %r' % (r.status, req))
+
+        # without -x402, serve-x402 is plain serve: nothing is charged.
+        srv.terminate(); srv.wait()
+        plain_port = free_port()
+        plain = subprocess.Popen ([serve, '127.0.0.1:%d' % (plain_port,), '-root', PJ (tmp, 'www'),
+                                   '-cert', site_cert, '-key', site_key, '-log', PJ (tmp, 'access.log'), '-r'],
+                                  stdout=serve_log, stderr=subprocess.STDOUT)
+        procs.append (plain)
+        wait_for (plain_port, plain, 'serve-x402 without -x402')
+        r = get (plain_port, '/premium/article.html')
+        check ('without -x402, nothing is charged', r.status == 200 and r.body == 'paid article\n', str (r.status))
     finally:
         for p in procs:
             if p.poll() is None:

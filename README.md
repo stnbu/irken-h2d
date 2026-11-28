@@ -88,10 +88,11 @@ reopen the log, it logs why and keeps writing to the old file.
 x402 payments
 -------------
 
-x402/serve is serve with x402 payments: with -x402 <file>, it charges
+serve-x402 is serve with x402 payments: with -x402 <file>, it charges
 for priced paths (HTTP 402 Payment Required, paid in e.g. USDC),
-verified and settled by a facilitator.  It's a program of its own, so
-serve has none of it.  See x402/README.md.
+verified and settled by a facilitator.  Logged-in users (-users,
+-passkeys) don't pay.  serve and serve-x402 are the same server
+(serve-main.scm); serve has none of the x402 code.  See x402/README.md.
 
 Certificates
 ------------

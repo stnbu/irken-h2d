@@ -1,6 +1,6 @@
 # x402 payments
 
-`x402/serve`, a version of irken-h2d's `serve`, charges for parts of a site with [x402](https://www.x402.org)
+`serve-x402`, irken-h2d's `serve` with x402 built in, charges for parts of a site with [x402](https://www.x402.org)
 (version 2): HTTP 402 Payment Required, paid in a stablecoin such as USDC on
 an EVM chain.  A client asks for a priced page, gets a 402 saying what to
 pay, signs a payment, and asks again with it; the server has the payment
@@ -13,23 +13,30 @@ planned; see "Settlers" below.)
 
 ## Building
 
-`x402/serve.scm` is `serve.scm` with `-x402` added, a program of its own (like
-`photos/` and `source/`) so that plain `serve` has none of the x402 code.  Its
-`main` is a copy of `serve.scm`'s: a change to one should go in the other.
+`serve.scm` and `serve-x402.scm` are the same server, `serve-main.scm`; the
+second also requires `x402/hooks.scm`, which adds `-x402` through the hooks in
+`serve-main.scm`.  So `serve` has none of the x402 code, and there's one `main`.
 From the top of the tree:
 
-    $ irken x402/serve.scm
+    $ irken serve-x402.scm
 
-which makes `x402/serve`.  It needs an irken-compiler from after November
+which makes `serve-x402`.  It needs an irken-compiler from after November
 2026 (master has the fixes it needs: `{}` in `lib/json.scm`, and one type for
 `:H2/BadFrame` so a program can be both an HTTP/2 server and an HTTPS
 client).
 
 ## Running
 
-    $ x402/serve 0.0.0.0:443 -root /var/www/data -cert ... -key ... -x402 /usr/local/etc/x402.conf
+    $ serve-x402 0.0.0.0:443 -root /var/www/data -cert ... -key ... -x402 /usr/local/etc/x402.conf
 
-It takes all of `serve`'s options; `-x402` is required.
+It takes all of `serve`'s options.  Without `-x402` it is plain `serve`, and
+charges for nothing.
+
+Logged-in users don't pay.  With `-users` or `-passkeys` (see `README.md`), a
+request with a login session or a good password is served free (and logged
+as `x402: free for <user>: <path>`); everyone else pays.  The file is read
+again on SIGHUP, where the server reloads on SIGHUP; a bad one is logged, and
+the old one kept.
 
 See `x402.conf.example`.  The configuration is checked at startup, and the
 server won't start if anything is missing or malformed.  It names:
@@ -76,6 +83,7 @@ same as `/premium/x`.
   `doom/http/client.scm`).
 * `config.scm`: reading the configuration.
 * `handler.scm`: the handler that charges for priced paths.
+* `hooks.scm`: x402 in `serve`: `-x402`, and the handler around the sites.
 * `t-x402.scm`: tests of `x402.scm` against the spec's examples.
 * `mock-facilitator.py`, `test-e2e.py`: an end-to-end test (below).
 * `pay.py`: a small client that pays (below).
@@ -91,14 +99,16 @@ signing, and a JSON-RPC client for an Ethereum node.
 ## Testing
 
     $ irken x402/t-x402.scm && x402/t-x402      # compare with the ";; =>" lines
-    $ python3 x402/test-e2e.py x402/serve
+    $ python3 x402/test-e2e.py ./serve-x402
 
-`test-e2e.py` runs `x402/serve` with a price on `/premium/`, against
+`test-e2e.py` runs `serve-x402` with a price on `/premium/`, against
 `mock-facilitator.py` (which checks everything but the signature, and has no
 blockchain), and uses curl to check: the 402, payments that work, are
 replayed, are for the wrong amount or address, are malformed, or fail at
 verify or at settle; paths that try to get around the price; that a 404 isn't
-charged; and that the server copes without the facilitator.  It needs
+charged; that logged-in users don't pay; that the server copes without the
+facilitator; SIGHUP (where the server reloads on it); and that without
+`-x402`, nothing is charged.  It needs
 python3, openssl, and a curl with HTTP/2.
 
 ## Paying for real (testnet)

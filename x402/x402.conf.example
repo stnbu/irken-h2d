@@ -1,4 +1,4 @@
-# x402 payments for irken-h2d: x402/serve -x402 <this file>.  see x402/README.md.
+# x402 payments for irken-h2d: serve-x402 -x402 <this file>.  see x402/README.md.
 
 # who verifies and settles payments.  x402.org's facilitator is for
 #   testnets.  (one that needs an API key isn't supported yet.)
