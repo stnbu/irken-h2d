@@ -1,11 +1,28 @@
 ;; -*- Mode: Irken -*-
 
 ;; irken-h2d: an HTTP/2 file server.
+;;
+;; this is the server; the programs are the files that include it and
+;;  call (main): serve.scm, and serve-x402.scm, which adds x402
+;;  payments.  an addition hooks itself in, before (main), through the
+;;  three lists below, so that serve itself needs no code for it:
+;;
+;;   *serve-options*   more command-line options (makeopt items)
+;;   *serve-usage*     their lines in the usage message
+;;   *site-wrappers*   (lambda (opts login site) ...) -> a handler in place
+;;                       of <site>, the sites under -root.  <login> is
+;;                       (maybe:yes login) with -users or -passkeys.
+;;                       the first added is innermost.
 
 (require "server.scm")
 
-(define program-options
-  (makeopt
+(define *serve-options* (list:nil))
+(define *serve-usage* (list:nil))
+(define *site-wrappers* (list:nil))
+
+(define (program-options)
+  (append
+   (makeopt
    (arg 'root (string "/var/local/www/data"))
    (arg 'cert (string "cert.pem"))
    (arg 'key  (string "key.pem"))
@@ -19,13 +36,14 @@
    (flag 'r)
    (pos 'addr (string "127.0.0.1:4433"))
    (flag 'h)
-   ))
+   )
+   *serve-options*))
 
 (define (get-options)
   (if (< sys.argc 2)
       (usage)
       (try
-       (process-options program-options (rest (vector->list sys.argv)))
+       (process-options (program-options) (rest (vector->list sys.argv)))
        except
        (:Getopt/MissingArg _ _) -> (usage)
        (:Getopt/UnknownArg _ _) -> (usage)
@@ -47,6 +65,7 @@
           "     without -users or -passkeys, /status is disabled.\n"
           "  [-user <name>] after binding the ports, run as this user\n"
           "     (start as root to bind ports 80 and 443)\n"
+          (string-concat (reverse *serve-usage*))
           "  [-d] print debugging output\n"
           "  [-h] print this usage.\n"
           "\n"
@@ -103,18 +122,29 @@
                   except
                   (:Serve/BadCreds why) -> (startup-failed why)))
           ((ip port) (split-addr addr))
-          (status (match users passkeys with
-                    (maybe:no) (maybe:no)
+          (login (match users passkeys with
+                   (maybe:no) (maybe:no)
+                   -> (maybe:no)
+                   _ _
+                   -> (let ((login (login/make users passkeys)))
+                        (push! *sighup-hooks* (lambda () (login/reload! login #t)))
+                        (maybe:yes login))))
+          (status (match login with
+                    (maybe:no)
                     -> (begin (logf "no -users or -passkeys: /status is disabled") (list:nil))
-                    _ _
-                    -> (let ((login (login/make users passkeys)))
-                         (push! *sighup-hooks* (lambda () (login/reload! login #t)))
-                         (list (login-wrapper login "/status" (status-handler addr opts))))))
+                    (maybe:yes login)
+                    -> (list (login-wrapper login "/status" (status-handler addr opts)))))
+          ;; the sites under -root, through whatever's been added.
+          (site (let loop ((site (host-handler root))
+                           (wrappers (reverse *site-wrappers*)))
+                  (match wrappers with
+                    () -> site
+                    (wrap . rest) -> (loop (wrap opts login site) rest))))
           (handler (h2-handler
                     (multi-handler
                      (append status
                              (list favicon-handler
-                                   (host-handler root))))))
+                                   site)))))
           ;;(handler (h2-handler (host-handler root)))
           )
       (set! *logfile* (maybe:yes (open-log log)))
@@ -147,5 +177,3 @@
 
 ;; don't let SIGPIPE take down the server.
 (signal/ignore SIGPIPE)
-(main)
-(printf "after main.\n")
