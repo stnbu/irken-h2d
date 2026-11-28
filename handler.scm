@@ -440,19 +440,22 @@
 	     (all? (lambda (x) (element-regex x)) parts))))
     ))
 
-(define (host-handler root)
+;; the host an :authority names (without its :port), as host-handler
+;;  uses it to pick the site's directory.  anything that has to agree
+;;  with host-handler about which site a request is for should use this.
+(define (authority->host authority)
+  (match (string-split authority #\:) with
+    (host port) -> host
+    (host)      -> host
+    _           -> ""
+    ))
 
-  (define (get-host authority)
-    (match (string-split authority #\:) with
-      (host port) -> host
-      (host)      -> host
-      _           -> ""
-      ))
+(define (host-handler root)
 
   (lambda (request)
     (match (lookup-header ":authority" request.headers) with
       (maybe:yes authority)
-      -> (let ((host (get-host authority)))
+      -> (let ((host (authority->host authority)))
 	   (if (hostname-legal? host)
 	     (let ((joined (path/make root host)))
 	       (if (not (isdir? joined))
