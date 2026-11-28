@@ -22,9 +22,11 @@
 ;;     304, ...) goes out as it is, and nothing is charged.
 ;;   if the settler can't be reached: 500.
 ;;
-;; prices match the path as file-handler sees it: %-decoded and with
-;;  dot segments removed, so "/free/../premium/x" and "/%70remium/x"
-;;  are both "/premium/x".
+;; prices match the host as host-handler sees it (authority->host), and
+;;  the path as file-handler sees it: %-decoded and with dot segments
+;;  removed, so "/free/../premium/x" and "/%70remium/x" are both
+;;  "/premium/x".  both without regard to case: see config.scm.  the
+;;  host's own terms (its pay-to) are the ones asked for, and checked.
 
 (require "x402/config.scm")
 
@@ -37,14 +39,23 @@
          (maybe:no) -> (maybe:no))
     (maybe:no) -> (maybe:no)))
 
-;; the price for <path>: prices are longest-prefix first.
-(define (x402/find-price prices path)
-  (let loop ((prices prices))
-    (match prices with
-      () -> (maybe:no)
-      (price . rest) -> (if (starts-with path price.prefix)
-                            (maybe:yes price)
-                            (loop rest)))))
+;; the host as host-handler will serve it from, lowercase.
+(define (x402/request-host request)
+  (match (lookup-header ":authority" request.headers) with
+    (maybe:yes authority) -> (downcase (authority->host authority))
+    (maybe:no) -> ""))
+
+;; the price for <path> on <host>: prices are the hosts' own first, and
+;;  longest-prefix first (see x402/load-config).
+(define (x402/find-price prices host path)
+  (let ((path (downcase path)))
+    (let loop ((prices prices))
+      (match prices with
+        () -> (maybe:no)
+        (price . rest) -> (if (and (or (string=? price.host host) (string=? price.host ""))
+                                   (starts-with path price.prefix))
+                              (maybe:yes price)
+                              (loop rest))))))
 
 ;; <request>, except that a 200 is first passed to <charge>, which
 ;;  answers (maybe:yes extra-headers) to let it go out, or (maybe:no)
@@ -74,13 +85,13 @@
      get-conn            = request.get-conn
      }))
 
-(define (x402/handle config price fun request path)
+(define (x402/handle config terms price fun request where path)
   (let ((authority (if-maybe a (lookup-header ":authority" request.headers) a ""))
         (url (format "https://" authority path))
-        (requirements (x402/requirements config.terms price)))
+        (requirements (x402/requirements terms price)))
 
     (define (send-402 error extra-headers)
-      (let ((required (json->string (x402/payment-required config.terms price url error))))
+      (let ((required (json->string (x402/payment-required terms price url error))))
         (debugf "=> 402 " path ": " error "\n")
         (request.send-headers "402"
                               (append (list (:tuple X402-PAYMENT-REQUIRED (b64-encode required))
@@ -92,7 +103,7 @@
         (request.send-data required #t)))
 
     (define (fail what why)
-      (logf "x402: " what " " path ": " why)
+      (logf "x402: " what " " where ": " why)
       (send-status request "500"))
 
     (define (pay payload payer)
@@ -100,7 +111,7 @@
         (match (config.settler.settle payload requirements) with
           (x402-settled:ok response)
           -> (begin
-               (logf "x402: paid " price.amount " for " path " by " payer ", transaction "
+               (logf "x402: paid " price.amount " to " terms.pay-to " for " where " by " payer ", transaction "
                      (json/get-string response "transaction"))
                (maybe:yes (list (:tuple X402-PAYMENT-RESPONSE (x402/header-encode response))
                                 (:tuple "cache-control" "private, no-store"))))
@@ -134,15 +145,18 @@
 
 (define (x402-wrapper state login other-handler)
   (lambda (request)
-    (let ((config state.config))
+    (let ((config state.config)
+          (host (x402/request-host request)))
       (match (x402/request-path request) with
         (maybe:yes path)
-        -> (match (x402/find-price config.prices path) (other-handler request) with
+        -> (match (x402/find-price config.prices host path) (other-handler request) with
              (maybe:yes price) (maybe:yes fun)
-             -> (match (x402/logged-in login request) with
-                  (maybe:yes name)
-                  -> (begin (logf "x402: free for " name ": " path) (maybe:yes fun))
-                  (maybe:no)
-                  -> (maybe:yes (lambda (request) (x402/handle config price fun request path))))
+             -> (let ((where (format host path)))
+                  (match (x402/logged-in login request) with
+                    (maybe:yes name)
+                    -> (begin (logf "x402: free for " name ": " where) (maybe:yes fun))
+                    (maybe:no)
+                    -> (maybe:yes (lambda (request)
+                                    (x402/handle config (x402/terms-for config host) price fun request where path)))))
              _ _ -> (maybe:no))
         (maybe:no) -> (maybe:no)))))

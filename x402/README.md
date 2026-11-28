@@ -34,7 +34,7 @@ charges for nothing.
 
 Logged-in users don't pay.  With `-users` or `-passkeys` (see `README.md`), a
 request with a login session or a good password is served free (and logged
-as `x402: free for <user>: <path>`); everyone else pays.  The file is read
+as `x402: free for <user>: <host><path>`); everyone else pays.  The file is read
 again on SIGHUP, where the server reloads on SIGHUP; a bad one is logged, and
 the old one kept.
 
@@ -46,14 +46,22 @@ server won't start if anything is missing or malformed.  It names:
 * `network`, `asset`, `asset-name`, `asset-version`: the chain (as CAIP-2,
   e.g. `eip155:84532` for Base Sepolia) and the token: its contract address
   and its EIP-712 domain name and version (`USDC`, `2` for Circle's USDC).
-* `pay-to`: the address payments go to.
 * `max-timeout`: seconds a client has to pay (default 60).
-* `price <path prefix> <amount> <description>`: any number of these.  Amounts
-  are in the token's smallest units (USDC has 6 decimals, so `10000` is 0.01
-  USDC).  The longest matching prefix wins.
+* `pay-to <address>`: where payments go, for hosts without their own.
+* `pay-to <host> <address>`: where payments for `<host>` go.  Each virtual host
+  (each directory under `-root`) can have its own.
+* `price <where> <amount> <description>`: any number of these.  `<where>` is
+  a path prefix for every host (`/premium/`), or for one host
+  (`https://example.com/premium/`).  Amounts are in the token's smallest units
+  (USDC has 6 decimals, so `10000` is 0.01 USDC).
 
-Each payment is logged: `x402: paid <amount> for <path> by <payer>,
-transaction <hash>`.
+For a request, the host's own prices are tried first, then the ones for
+every host, longest prefix first; it pays the host's own `pay-to`, or the
+default.  A host with no prices is free.  A host with a price but no address
+to pay, an unknown or repeated setting, or a malformed line stops the server.
+
+Each payment is logged: `x402: paid <amount> to <address> for <host><path>
+by <payer>, transaction <hash>`.
 
 ## What happens to a request
 
@@ -72,9 +80,12 @@ The payment is settled only when the site is about to send a 200: then the
 a 402 with `PAYMENT-RESPONSE` saying why goes out instead, and no content.
 Anything else (a 404, a 304) goes out unchanged, and nothing is charged.
 
-Prices are matched against the path as it will be served, after `%`-decoding
-and removing `.` and `..`, so `/%70remium/x` and `/free/../premium/x` cost the
-same as `/premium/x`.
+Prices are matched against the host and path as they will be served: the host
+from `:authority` without its port, as `serve` picks the site's directory, and
+the path after `%`-decoding and removing `.` and `..`, so `/%70remium/x` and
+`/free/../premium/x` cost the same as `/premium/x`.  Both match without regard
+to case: on a case-insensitive filesystem (macOS's, by default),
+`/Premium/x` is the same file as `/premium/x`, so it has to cost the same.
 
 ## Files
 

@@ -29,6 +29,10 @@ ASSET = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
 NETWORK = 'eip155:84532'
 PRICE = '10000'
 PAYER = '0x857b06519E91e3A54538791bDbb0E22373e36b66'
+# a second site, with its own address and a price of its own.
+OTHER = 'other.test'
+OTHER_PAY_TO = '0x' + 'ab' * 20
+MEMBERS_PRICE = '50000'
 
 def free_port():
     s = socket.socket()
@@ -41,7 +45,7 @@ def make_cert (dir, name):
     cert, key = PJ (dir, name + '.pem'), PJ (dir, name + '-key.pem')
     subprocess.run (['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1',
                      '-nodes', '-keyout', key, '-out', cert, '-days', '2', '-subj', '/CN=localhost',
-                     '-addext', 'subjectAltName=DNS:localhost'],
+                     '-addext', 'subjectAltName=DNS:localhost,DNS:%s' % (OTHER,)],
                     check=True, capture_output=True)
     return cert, key
 
@@ -68,14 +72,14 @@ def requirements (amount=PRICE, pay_to=PAY_TO, network=NETWORK):
 
 nonce_counter = [0]
 
-def payment (payer=PAYER, amount=PRICE, accepted=None, nonce=None):
+def payment (payer=PAYER, amount=PRICE, accepted=None, nonce=None, pay_to=PAY_TO):
     """a PaymentPayload; the mock facilitator doesn't check the signature."""
     nonce_counter[0] += 1
     now = int (time.time())
     return {'x402Version': 2,
             'accepted': accepted or requirements (amount),
             'payload': {'signature': '0x' + '11' * 65,
-                        'authorization': {'from': payer, 'to': PAY_TO, 'value': amount,
+                        'authorization': {'from': payer, 'to': pay_to, 'value': amount,
                                           'validAfter': str (now - 600), 'validBefore': str (now + 60),
                                           'nonce': nonce or ('0x%064x' % (nonce_counter[0] + int (now) * 1000))}},
             'extensions': {}}
@@ -84,17 +88,20 @@ class Result:
     def __init__ (self, status, headers, body):
         self.status, self.headers, self.body = status, headers, body
 
-def get (port, path, headers={}, path_as_is=False, user=None):
+def get (port, path, headers={}, path_as_is=False, user=None, host='localhost'):
     # --compressed: irken-h2d deflates whether or not the client asks
     #   (a known bug), so ask, as most clients do.
-    cmd = ['curl', '-sS', '-k', '--http2', '--compressed', '--max-time', '20', '-D', '-', '-o', '-']
+    # --noproxy: this is all on 127.0.0.1, whatever *_PROXY says.
+    cmd = ['curl', '-sS', '-k', '--http2', '--compressed', '--noproxy', '*', '--max-time', '20', '-D', '-', '-o', '-']
     if path_as_is:
         cmd.append ('--path-as-is')
     if user:
         cmd += ['-u', user]
+    if host != 'localhost':
+        cmd += ['--resolve', '%s:%d:127.0.0.1' % (host, port)]
     for k, v in headers.items():
         cmd += ['-H', '%s: %s' % (k, v)]
-    cmd.append ('https://localhost:%d%s' % (port, path))
+    cmd.append ('https://%s:%d%s' % (host, port, path))
     out = subprocess.run (cmd, capture_output=True).stdout.decode ('utf-8', 'replace')
     head, _, body = out.partition ('\r\n\r\n')
     lines = head.split ('\r\n')
@@ -127,9 +134,16 @@ def main():
         os.makedirs (PJ (www, 'premium'))
         open (PJ (www, 'index.html'), 'w').write ('free page\n')
         open (PJ (www, 'premium', 'article.html'), 'w').write ('paid article\n')
+        os.makedirs (PJ (www, 'members'))
+        open (PJ (www, 'members', 'list.html'), 'w').write ('localhost members\n')
+        other = PJ (tmp, 'www', OTHER)
+        for d in ['premium', 'members']:
+            os.makedirs (PJ (other, d))
+            open (PJ (other, d, 'page.html'), 'w').write ('%s %s\n' % (OTHER, d))
         fac_port, site_port = free_port(), free_port()
         users = PJ (tmp, 'users')
         open (users, 'w').write ('member:sesame\n')
+        os.chmod (users, 0o600)
         conf = PJ (tmp, 'x402.conf')
         open (conf, 'w').write ('\n'.join ([
             '# test configuration',
@@ -140,8 +154,10 @@ def main():
             'asset-name        USDC',
             'asset-version     2',
             'pay-to            %s' % (PAY_TO,),
+            'pay-to %s  %s' % (OTHER, OTHER_PAY_TO),
             'max-timeout       60',
             'price /premium/   %s  premium articles' % (PRICE,),
+            'price https://%s/members/  %s  members only' % (OTHER, MEMBERS_PRICE),
             '']))
         fac_log = open (PJ (tmp, 'facilitator.out'), 'w')
         fac = subprocess.Popen ([sys.executable, PJ (HERE, 'mock-facilitator.py'), '-port', str (fac_port),
@@ -170,7 +186,8 @@ def main():
                '%d %r' % (r.status, req))
         check ('the 402 body is the same PaymentRequired', r.status == 402 and json.loads (r.body or 'null') == req)
 
-        for path in ['/%70remium/article.html', '/free/../premium/article.html', '//premium/article.html', '/premium/./article.html']:
+        for path in ['/%70remium/article.html', '/free/../premium/article.html', '//premium/article.html', '/premium/./article.html',
+                     '/PREMIUM/article.html', '/Premium/article.html']:
             r = get (site_port, path, path_as_is=True)
             check ('no way around the price: %s' % (path,), r.status == 402, str (r.status))
 
@@ -226,6 +243,27 @@ def main():
         check ('a missing page is a 404, and isn\'t charged', r.status == 404 and settlements() == before,
                '%d, settlements %d -> %d' % (r.status, before, settlements()))
 
+        # another host: its own address, for the every-host price and its own.
+        def offer (r):
+            return (unb64 (r.headers['payment-required']).get ('accepts') or [{}])[0] if 'payment-required' in r.headers else {}
+        r = get (site_port, '/premium/page.html', host=OTHER)
+        check ('another host pays its own address, for a price for every host',
+               r.status == 402 and offer (r) == requirements (pay_to=OTHER_PAY_TO), '%d %r' % (r.status, offer (r)))
+        r = get (site_port, '/members/page.html', host=OTHER)
+        check ('a host\'s own price', r.status == 402 and offer (r) == requirements (MEMBERS_PRICE, pay_to=OTHER_PAY_TO),
+               '%d %r' % (r.status, offer (r)))
+        r = get (site_port, '/members/list.html')
+        check ('a host\'s price is only for that host', r.status == 200 and r.body == 'localhost members\n', str (r.status))
+        r = get (site_port, '/members/page.html', {'payment-signature': b64 (payment())}, host=OTHER)
+        check ('paying one host\'s address on another: 402', r.status == 402, str (r.status))
+        r = get (site_port, '/members/page.html', host=OTHER,
+                 headers={'payment-signature': b64 (payment (amount=MEMBERS_PRICE, pay_to=OTHER_PAY_TO,
+                                                             accepted=requirements (MEMBERS_PRICE, pay_to=OTHER_PAY_TO)))})
+        check ('paying the other host', r.status == 200 and r.body == '%s members\n' % (OTHER,), '%d %r' % (r.status, r.body[:40]))
+        for host in ['OTHER.TEST', 'Other.Test']:
+            r = get (site_port, '/members/page.html', host=host)
+            check ('no way around a host\'s price: %s' % (host,), r.status in (402, 404), str (r.status))
+
         before = settlements()
         r = get (site_port, '/premium/article.html', user='member:sesame')
         check ('a logged-in user gets the article free',
@@ -249,8 +287,9 @@ def main():
         check ('logged-in users don\'t need the facilitator', r.status == 200 and r.body == 'paid article\n', str (r.status))
 
         log = open (PJ (tmp, 'serve.out')).read()
-        check ('payments are logged', log.count ('x402: paid 10000 for /premium/article.html by %s' % (PAYER,)) == 3, log)
-        check ('free access is logged', log.count ('x402: free for member: /premium/article.html') == 2, log)
+        check ('payments are logged', log.count ('x402: paid 10000 to %s for localhost/premium/article.html by %s' % (PAY_TO, PAYER)) == 3
+               and log.count ('x402: paid %s to %s for %s/members/page.html' % (MEMBERS_PRICE, OTHER_PAY_TO, OTHER)) == 1, log)
+        check ('free access is logged', log.count ('x402: free for member: localhost/premium/article.html') == 2, log)
 
         # SIGHUP re-reads the file, and keeps the old one if the new one's bad.
         #   (only where the server reloads on SIGHUP: not on Linux, yet.)
@@ -271,6 +310,25 @@ def main():
             check ('SIGHUP: a bad file is logged, and the old one kept', r.status == 402
                    and req.get ('accepts', [{}])[0].get ('amount') == '99000'
                    and 'keeping the old one' in open (PJ (tmp, 'serve.out')).read(), '%d %r' % (r.status, req))
+
+        # a bad configuration stops the server, saying why.
+        good = open (conf).read().replace ('price /x/ lots of money\n', '')
+        for change, why in [
+                (('max-timeout       60', 'max-timout 60'), 'unknown setting: max-timout'),
+                (('asset-name        USDC', 'asset-name USDC\nasset-name USDC'), 'asset-name: twice'),
+                (('pay-to %s' % (OTHER,), 'pay-to %s:443' % (OTHER,)), 'no port'),
+                (('price /premium/', 'price premium/'), 'must be a path'),
+                (('pay-to            %s\n' % (PAY_TO,), ''), 'no pay-to for every host'),
+                (('pay-to %s  %s\n' % (OTHER, OTHER_PAY_TO), 'pay-to %s  0x12\n' % (OTHER,)), 'not an address')]:
+            bad = PJ (tmp, 'bad.conf')
+            assert change[0] in good, change
+            open (bad, 'w').write (good.replace (*change))
+            out = subprocess.run ([serve, '127.0.0.1:%d' % (free_port(),), '-root', PJ (tmp, 'www'), '-cert', site_cert,
+                                   '-key', site_key, '-log', PJ (tmp, 'access.log'), '-r', '-x402', bad],
+                                  capture_output=True, timeout=20)
+            text = (out.stdout + out.stderr).decode ('utf-8', 'replace')
+            check ('a bad configuration stops the server: %s' % (why,), out.returncode != 0 and why in text,
+                   '%d %r' % (out.returncode, text[-200:]))
 
         # without -x402, serve-x402 is plain serve: nothing is charged.
         srv.terminate(); srv.wait()

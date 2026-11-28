@@ -13,8 +13,14 @@
 
 (define (x402/log-config path config)
   (logf "x402: " (int (length config.prices)) " prices from " path
-        ", paid to " config.terms.pay-to " on " config.terms.network
-        ", settled by " config.settler.name))
+        " on " config.terms.network ", settled by " config.settler.name)
+  (for-list price config.prices
+    (logf "x402:   " (if (string=? price.host "") "(every host)" price.host) price.prefix
+          " " price.amount " " price.description))
+  (for-map host terms config.sites
+    (logf "x402:   " host ": paid to " terms.pay-to))
+  (when (> (string-length config.terms.pay-to) 0)
+    (logf "x402:   other hosts: paid to " config.terms.pay-to)))
 
 (define (x402/serve-wrapper path login site)
   (let ((state {config=(try

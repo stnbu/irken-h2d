@@ -41,7 +41,7 @@
 ;; the largest PAYMENT-SIGNATURE we'll decode.  a real one is ~1kB.
 (define X402-MAX-HEADER 8192)
 
-;; terms: what every priced resource accepts.
+;; terms: what a host's priced resources accept.
 ;;   network        CAIP-2, e.g. "eip155:84532" (Base Sepolia)
 ;;   asset          the token's contract address
 ;;   asset-name     its EIP-712 domain name, e.g. "USDC"
@@ -49,7 +49,8 @@
 ;;   pay-to         the address that receives payments
 ;;   max-timeout    seconds a payment may take
 ;;
-;; price: one priced part of a site.
+;; price: one priced part of a site (only amount and description are used here).
+;;   host           its host, or "" for every host
 ;;   prefix         a path prefix, e.g. "/premium/"
 ;;   amount         atomic units, as a string: USDC has 6 decimals,
 ;;                  so "10000" is 0.01 USDC.

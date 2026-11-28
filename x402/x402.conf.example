@@ -12,13 +12,19 @@ asset-name      USDC
 asset-version   2
 
 # your address: payments go straight here.  the server holds no key.
+#   "pay-to <host> <address>" gives one host (a directory under -root)
+#   its own; this one is for the rest.
 pay-to          0x0000000000000000000000000000000000000000
+# pay-to example.com  0x0000000000000000000000000000000000000001
 
 # seconds a client has to complete a payment.
 max-timeout     60
 
-# price <path prefix> <amount in atomic units> <description>
-#   USDC has 6 decimals: 10000 is 0.01 USDC.  the longest prefix wins,
-#   for every host the server serves.
+# price <where> <amount in atomic units> <description>
+#   <where> is a path prefix for every host the server serves, or
+#   https://<host>/<prefix> for one.  USDC has 6 decimals: 10000 is
+#   0.01 USDC.  a host's own prices come first, then the ones for every
+#   host; the longest prefix wins.
 price /premium/        10000   premium articles
 price /premium/big/    250000  the big ones
+# price https://example.com/members/  50000  members only
